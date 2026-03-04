@@ -1,63 +1,10 @@
 import data
-import json
-import time
+from helpers import retrieve_phone_code
+from pages import UrbanRoutesPage
 from selenium import webdriver
 from selenium.webdriver import Keys
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
-
-def retrieve_phone_code(driver) -> str:
-    code = None
-    for i in range(15):
-        try:
-            logs = [log["message"] for log in driver.get_log('performance') if log.get("message")
-                    and 'api/v1/number?number' in log.get("message")]
-            for log in reversed(logs):
-                message_data = json.loads(log)["message"]
-                body = driver.execute_cdp_cmd('Network.getResponseBody',
-                                              {'requestId': message_data["params"]["requestId"]})
-                code = ''.join([x for x in body['body'] if x.isdigit()])
-        except Exception:
-            time.sleep(1)
-            continue
-        if code: return code
-    return "0000"
-
-
-class UrbanRoutesPage:
-    # Selectores Base
-    from_field = (By.ID, 'from')
-    to_field = (By.ID, 'to')
-    request_taxi_btn = (By.XPATH, "//button[text()='Pedir un taxi']")
-    comfort_tariff = (By.XPATH, "//*[contains(text(),'Comfort')]")
-
-
-    phone_btn = (By.CLASS_NAME, 'np-button')
-    phone_input = (By.ID, 'phone')
-    next_btn = (By.XPATH, "//button[text()='Siguiente']")
-    sms_input = (By.ID, 'code')  # Este es el del SMS
-    confirm_sms_btn = (By.XPATH, "//button[text()='Confirmar']")
-
-    # Selectores Tarjeta
-    payment_method_btn = (By.CLASS_NAME, 'pp-button')
-    add_card_btn = (By.XPATH, "//div[text()='Agregar tarjeta']")
-    card_num_field = (By.ID, 'number')
-    # Usamos el contenedor padre para no confundirlo con el del SMS
-    card_code_field = (By.XPATH, "//div[@class='card-code-input']//input[@id='code']")
-    add_confirm_btn = (By.XPATH, "//button[text()='Agregar']")
-    close_payment_modal = (By.XPATH, "//div[@class='payment-picker open']//button[@class='close-button section-close']")
-
-    # Extras
-    comment_field = (By.ID, 'comment')
-    blanket_switch = (By.XPATH, "//*[@class='switch']")
-    ice_cream_plus = (By.XPATH, "//div[text()='Helado']/..//div[@class='counter-plus']")
-    order_btn = (By.CLASS_NAME, 'smart-button')
-    order_header = (By.CLASS_NAME, 'order-header-content')
-
-    def __init__(self, driver):
-        self.driver = driver
 
 
 class TestUrbanRoutes:
@@ -71,73 +18,83 @@ class TestUrbanRoutes:
         cls.driver = webdriver.Chrome(options=chrome_options)
         cls.driver.implicitly_wait(10)
         cls.driver.maximize_window()
+        cls.driver.get(data.urban_routes_url)
+        cls.page = UrbanRoutesPage(cls.driver)
 
-    def test_full_taxi_order(self):
-        self.driver.get(data.urban_routes_url)
-        page = UrbanRoutesPage(self.driver)
-        wait = WebDriverWait(self.driver, 25)
+    def test_01_set_route(self):
+        wait = WebDriverWait(self.driver, 10)
+        wait.until(EC.visibility_of_element_located(self.page.from_field)).send_keys(data.address_from)
+        self.driver.find_element(*self.page.to_field).send_keys(data.address_to)
 
-        # 1. Direcciones
-        wait.until(EC.visibility_of_element_located(page.from_field)).send_keys(data.address_from)
-        self.driver.find_element(*page.to_field).send_keys(data.address_to)
+        assert self.driver.find_element(*self.page.from_field).get_attribute('value') == data.address_from
+        assert self.driver.find_element(*self.page.to_field).get_attribute('value') == data.address_to
 
-        # 2. Comfort
-        wait.until(EC.element_to_be_clickable(page.request_taxi_btn)).click()
-        wait.until(EC.element_to_be_clickable(page.comfort_tariff)).click()
+    def test_02_select_comfort_tariff(self):
+        wait = WebDriverWait(self.driver, 10)
+        wait.until(EC.element_to_be_clickable(self.page.request_taxi_btn)).click()
+        wait.until(EC.element_to_be_clickable(self.page.comfort_tariff)).click()
+        # Verificación visual (depende de la app, usualmente cambia el estilo)
+        assert "Comfort" in self.driver.find_element(*self.page.comfort_tariff).text
 
-        # 3. Teléfono (Aquí se usa el código 5926 interceptado)
-        self.driver.find_element(*page.phone_btn).click()
-        wait.until(EC.visibility_of_element_located(page.phone_input)).send_keys(data.phone_number)
-        self.driver.find_element(*page.next_btn).click()
+    def test_03_enter_phone_number(self):
+        self.driver.find_element(*self.page.phone_btn).click()
+        WebDriverWait(self.driver, 10).until(EC.visibility_of_element_located(self.page.phone_input)).send_keys(
+            data.phone_number)
+        self.driver.find_element(*self.page.next_btn).click()
+        assert self.driver.find_element(*self.page.phone_input).get_attribute('value') == data.phone_number
 
+    def test_04_confirm_sms_code(self):
         sms = retrieve_phone_code(self.driver)
-        wait.until(EC.visibility_of_element_located(page.sms_input)).send_keys(sms)
-        self.driver.find_element(*page.confirm_sms_btn).click()
+        sms_field = WebDriverWait(self.driver, 10).until(EC.visibility_of_element_located(self.page.sms_input))
+        sms_field.send_keys(sms)
+        self.driver.find_element(*self.page.confirm_sms_btn).click()
+        # Si el botón de teléfono ahora muestra el número, el SMS fue exitoso
+        assert data.phone_number in self.driver.find_element(*self.page.phone_btn).text
 
-        # 4. Tarjeta
-        wait.until(EC.element_to_be_clickable(page.payment_method_btn)).click()
-        wait.until(EC.element_to_be_clickable(page.add_card_btn)).click()
+    def test_05_add_payment_card(self):
+        self.driver.find_element(*self.page.payment_method_btn).click()
+        self.driver.find_element(*self.page.add_card_btn).click()
 
-        num_in = wait.until(EC.visibility_of_element_located(page.card_num_field))
+        num_in = WebDriverWait(self.driver, 10).until(EC.visibility_of_element_located(self.page.card_num_field))
         num_in.send_keys(data.card_number)
 
-        # IMPORTANTE:
-        code_in = self.driver.find_element(*page.card_code_field)
+        code_in = self.driver.find_element(*self.page.card_code_field)
         code_in.send_keys(data.card_code)
         code_in.send_keys(Keys.TAB)
 
-        # Clic
-        btn_add = self.driver.find_element(*page.add_confirm_btn)
-        self.driver.execute_script("arguments[0].click();", btn_add)
+        self.driver.execute_script("arguments[0].click();", self.driver.find_element(*self.page.add_confirm_btn))
+        self.driver.execute_script("arguments[0].click();", self.driver.find_element(*self.page.close_payment_modal))
 
-        # Cerrar el modal
-        btn_close = wait.until(EC.presence_of_element_located(page.close_payment_modal))
-        self.driver.execute_script("arguments[0].click();", btn_close)
+        assert "Tarjeta" in self.driver.find_element(*self.page.payment_method_btn).text
 
-        # 5. Extras
-        self.driver.find_element(*page.comment_field).send_keys(data.message_for_driver)
-        self.driver.find_element(*page.blanket_switch).click()
-        plus = self.driver.find_element(*page.ice_cream_plus)
+    def test_06_add_driver_message(self):
+        self.driver.find_element(*self.page.comment_field).send_keys(data.message_for_driver)
+        assert self.driver.find_element(*self.page.comment_field).get_attribute('value') == data.message_for_driver
+
+    def test_07_toggle_blanket(self):
+        self.driver.find_element(*self.page.blanket_switch).click()
+        # Verificamos si el input oculto está seleccionado
+        assert self.driver.find_element(*self.page.blanket_input).is_selected()
+
+    def test_08_add_ice_cream(self):
+        plus = self.driver.find_element(*self.page.ice_cream_plus)
         plus.click()
         plus.click()
+        assert self.driver.find_element(*self.page.ice_cream_counter).text == '2'
 
-        # 6. Pedir Taxi
-        self.driver.find_element(*page.order_btn).click()
-
-        # 7. Verificación
-        assert wait.until(EC.visibility_of_element_located(page.order_header)).is_displayed()
-        print("¡TODO FUNCIONÓ!")
+    def test_09_request_taxi(self):
+        self.driver.find_element(*self.page.order_btn).click()
+        wait = WebDriverWait(self.driver, 15)
+        assert wait.until(EC.visibility_of_element_located(self.page.order_header)).is_displayed()
 
     @classmethod
     def teardown_class(cls):
-        time.sleep(5)
         cls.driver.quit()
 
 
-if __name__ == "__main__":
-    TestUrbanRoutes.setup_class()
-    test = TestUrbanRoutes()
-    try:
-        test.test_full_taxi_order()
-    finally:
-        TestUrbanRoutes.teardown_class()
+
+
+
+
+
+
